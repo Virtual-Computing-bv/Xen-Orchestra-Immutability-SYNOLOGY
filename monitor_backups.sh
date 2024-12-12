@@ -49,8 +49,8 @@ move_files_to_subvolume() {
   sudo mkdir -p "$TEMP_DIR"
   echo "$(date) - Created temp directory $TEMP_DIR to store files temporarily" >> "$LOG_FILE"
 
-  # Move all files from the original directory to the temp directory
-  sudo mv "$DIR"/* "$TEMP_DIR/"
+  # Move all files from the original directory to the temp directory, including hidden files
+  sudo mv "$DIR"/* "$DIR"/.* "$TEMP_DIR" 2>/dev/null || true
   echo "$(date) - Moved files from $DIR to temp directory $TEMP_DIR" >> "$LOG_FILE"
 
   # Check if $DIR is a subvolume and delete it if necessary
@@ -74,8 +74,6 @@ move_files_to_subvolume() {
     fi
   fi
 
-  
-
   # Create the subvolume
   sudo btrfs subvolume create "$DIR"
   if [ $? -eq 0 ]; then
@@ -87,6 +85,7 @@ move_files_to_subvolume() {
 
   # Move files back into the original directory (now a subvolume)
   sudo mv "$TEMP_DIR"/* "$DIR/"
+  sudo mv "$TEMP_DIR"/.* "$DIR/" 2>/dev/null || true
   sudo rmdir "$TEMP_DIR"  # Remove the temp directory
   echo "$(date) - Moved files back into subvolume $DIR and removed temp directory $TEMP_DIR" >> "$LOG_FILE"
 
@@ -96,24 +95,31 @@ move_files_to_subvolume() {
 
 
 
+
 # Function to make a directory or subvolume immutable
 make_immutable() {
   DIR="$1"
+
+  # Skip special directories
   if [[ "$DIR" == *@eaDir* || "$DIR" == *.snapshots* ]]; then
     echo "$(date) - Skipping special directory $DIR" >> "$LOG_FILE"
     return
   fi
 
-  # Exclude cache.json.gz while setting the directory immutable
+  # Check if the directory is a subvolume
   if is_subvolume "$DIR"; then
-    echo "$(date) - Making subvolume $DIR immutable (excluding cache.json.gz)" >> "$LOG_FILE"
-    sudo find "$DIR" -type f ! -name "cache.json.gz" -exec sudo btrfs property set {} ro true \;
+    echo "$(date) - Making subvolume $DIR immutable" >> "$LOG_FILE"
+    sudo btrfs property set "$DIR" ro true
+    if [ $? -eq 0 ]; then
+      echo "$(date) - Successfully made subvolume $DIR immutable" >> "$LOG_FILE"
+    else
+      echo "$(date) - Failed to make subvolume $DIR immutable" >> "$LOG_FILE"
+    fi
   else
-    echo "$(date) - Making directory $DIR immutable and converting to subvolume (excluding cache.json.gz)" >> "$LOG_FILE"
-    sudo btrfs subvolume create "$DIR"
-    sudo find "$DIR" -type f ! -name "cache.json.gz" -exec sudo btrfs property set {} ro true \;
+    echo "$(date) - $DIR is not a subvolume; cannot set immutability" >> "$LOG_FILE"
   fi
 }
+
 
 
 # Function to lift immutability on a subvolume
@@ -131,7 +137,8 @@ lift_immutability() {
 while true; do
   CURRENT_TIME=$(date +%s)  # Update the current time on each iteration
 
-  find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d | while read NEW_BACKUP; do
+  # Find all directories containing .vhd files and process each unique directory
+  find "$BACKUP_DIR" -type f -name "*.vhd" -exec dirname {} \; | sort -u | while read NEW_BACKUP; do
     # Get the timestamp of when the backup was created
     BACKUP_STATE=$(get_backup_state "$NEW_BACKUP")
 
