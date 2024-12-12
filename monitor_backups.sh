@@ -40,13 +40,6 @@ is_subvolume() {
   fi
 }
 
-# Function to check if a subvolume is immutable
-is_immutable() {
-  DIR="$1"
-  PROP=$(sudo btrfs property get "$DIR" ro 2>/dev/null | awk '{print $2}')
-  [[ "$PROP" == "true" ]]
-}
-
 # Function to move files to a temporary folder, create a subvolume, and make the subvolume immutable
 move_files_to_subvolume() {
   DIR="$1"
@@ -57,43 +50,70 @@ move_files_to_subvolume() {
   echo "$(date) - Created temp directory $TEMP_DIR to store files temporarily" >> "$LOG_FILE"
 
   # Move all files from the original directory to the temp directory
-  sudo mv "$DIR"/* "$TEMP_DIR"
+  sudo mv "$DIR"/* "$TEMP_DIR/"
   echo "$(date) - Moved files from $DIR to temp directory $TEMP_DIR" >> "$LOG_FILE"
+
+  # Check if $DIR is a subvolume and delete it if necessary
+  if is_subvolume "$DIR"; then
+    echo "$(date) - $DIR is a subvolume; deleting the subvolume before recreating" >> "$LOG_FILE"
+    sudo btrfs subvolume delete "$DIR"
+    if [ $? -eq 0 ]; then
+      echo "$(date) - Deleted existing subvolume $DIR" >> "$LOG_FILE"
+    else
+      echo "$(date) - Failed to delete existing subvolume $DIR" >> "$LOG_FILE"
+      return 1
+    fi
+  else
+    # Remove the original directory to create the subvolume
+    sudo rmdir "$DIR"
+    if [ $? -eq 0 ]; then
+      echo "$(date) - Removed original directory $DIR" >> "$LOG_FILE"
+    else
+      echo "$(date) - Failed to remove original directory $DIR" >> "$LOG_FILE"
+      return 1
+    fi
+  fi
+
+  
 
   # Create the subvolume
   sudo btrfs subvolume create "$DIR"
-  echo "$(date) - Created subvolume $DIR" >> "$LOG_FILE"
+  if [ $? -eq 0 ]; then
+    echo "$(date) - Created subvolume $DIR" >> "$LOG_FILE"
+  else
+    echo "$(date) - Failed to create subvolume $DIR" >> "$LOG_FILE"
+    return 1
+  fi
 
   # Move files back into the original directory (now a subvolume)
-  sudo mv "$TEMP_DIR"/* "$DIR"
+  sudo mv "$TEMP_DIR"/* "$DIR/"
   sudo rmdir "$TEMP_DIR"  # Remove the temp directory
-  echo "$(date) - Moved files back into subvolume $DIR and removed temp directory" >> "$LOG_FILE"
+  echo "$(date) - Moved files back into subvolume $DIR and removed temp directory $TEMP_DIR" >> "$LOG_FILE"
 
   # Make the subvolume immutable
   make_immutable "$DIR"
 }
 
+
+
 # Function to make a directory or subvolume immutable
 make_immutable() {
   DIR="$1"
-  
   if [[ "$DIR" == *@eaDir* || "$DIR" == *.snapshots* ]]; then
     echo "$(date) - Skipping special directory $DIR" >> "$LOG_FILE"
     return
   fi
 
-  # Ensure the directory is a subvolume before setting immutability
+  # Exclude cache.json.gz while setting the directory immutable
   if is_subvolume "$DIR"; then
     echo "$(date) - Making subvolume $DIR immutable (excluding cache.json.gz)" >> "$LOG_FILE"
-    # Find and set immutability only on regular files, excluding cache.json.gz
-    find "$DIR" -type f ! -name "cache.json.gz" -exec sudo btrfs property set {} ro true \;
+    sudo find "$DIR" -type f ! -name "cache.json.gz" -exec sudo btrfs property set {} ro true \;
   else
-    echo "$(date) - $DIR is not a subvolume; calling move_files_to_subvolume to convert it" >> "$LOG_FILE"
-    move_files_to_subvolume "$DIR"
+    echo "$(date) - Making directory $DIR immutable and converting to subvolume (excluding cache.json.gz)" >> "$LOG_FILE"
+    sudo btrfs subvolume create "$DIR"
+    sudo find "$DIR" -type f ! -name "cache.json.gz" -exec sudo btrfs property set {} ro true \;
   fi
 }
-
-
 
 
 # Function to lift immutability on a subvolume
@@ -132,13 +152,7 @@ while true; do
         jq --arg dir "$NEW_BACKUP" 'del(.[$dir])' "$BACKUP_STATE_FILE" > tmp.json && mv tmp.json "$BACKUP_STATE_FILE"
         echo "$(date) - Lifted immutability for $NEW_BACKUP" >> "$LOG_FILE"
       else
-        # Check if the subvolume is still immutable; if not, make it immutable again
-        if ! is_immutable "$NEW_BACKUP"; then
-          echo "$(date) - Subvolume $NEW_BACKUP is not immutable; setting it back to immutable" >> "$LOG_FILE"
-          make_immutable "$NEW_BACKUP"
-        else
-          echo "$(date) - $NEW_BACKUP still within immutability period and is immutable" >> "$LOG_FILE"
-        fi
+        echo "$(date) - $NEW_BACKUP still within immutability period" >> "$LOG_FILE"
       fi
     fi
   done
