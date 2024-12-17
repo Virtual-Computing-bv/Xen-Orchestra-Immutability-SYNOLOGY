@@ -40,10 +40,36 @@ is_subvolume() {
   fi
 }
 
+# Function to move cache.json.gz files temporarily
+move_cache_files() {
+  DIR="$1"
+  TEMP_DIR="/volume1/scripts/cache_backup"
+
+  # Create temp directory to hold cache files
+  mkdir -p "$TEMP_DIR"
+
+  # Move all cache.json.gz files to the temp directory
+  find "$DIR" -name "cache.json.gz" -exec mv {} "$TEMP_DIR" \;
+  echo "$(date) - Moved cache.json.gz files from $DIR to $TEMP_DIR" >> "$LOG_FILE"
+}
+
+# Function to restore cache.json.gz files
+restore_cache_files() {
+  DIR="$1"
+  TEMP_DIR="/volume1/scripts/cache_backup"
+
+  # Move all cache.json.gz files back to their original location
+  find "$TEMP_DIR" -name "cache.json.gz" -exec mv {} "$DIR" \;
+  rmdir "$TEMP_DIR"  # Remove the temp directory if empty
+  echo "$(date) - Restored cache.json.gz files to $DIR" >> "$LOG_FILE"
+}
+
 # Function to move files to a temporary folder, create a subvolume, and make the subvolume immutable
 move_files_to_subvolume() {
   DIR="$1"
   TEMP_DIR="${DIR}.temp"
+
+  move_cache_files "$DIR"
 
   # Create temp directory to store files temporarily
   sudo mkdir -p "$TEMP_DIR"
@@ -91,6 +117,8 @@ move_files_to_subvolume() {
 
   # Make the subvolume immutable
   make_immutable "$DIR"
+  restore_cache_files "$DIR"
+
 }
 
 
@@ -135,35 +163,36 @@ lift_immutability() {
 
 # Loop to monitor new directories
 while true; do
-  CURRENT_TIME=$(date +%s)  # Update the current time on each iteration
+  CURRENT_TIME=$(date +%s)
 
-  # Find all directories containing .vhd files and process each unique directory
-  find "$BACKUP_DIR" -type f -name "*.vhd" -exec dirname {} \; | sort -u | while read NEW_BACKUP; do
-    # Get the timestamp of when the backup was created
-    BACKUP_STATE=$(get_backup_state "$NEW_BACKUP")
+  # Find all .vhd files and determine their top-level backup folder
+  find "$BACKUP_DIR" -type f -name "*.vhd" | while read -r VHD_FILE; do
+    # Determine the top-level folder (e.g., /volume1/XCP06/folder1)
+    TOP_LEVEL_BACKUP=$(echo "$VHD_FILE" | awk -F'/' '{print $1"/"$2"/"$3}')
 
-    # Skip already processed directories
+    # Check if the top-level backup folder has already been processed
+    BACKUP_STATE=$(get_backup_state "$TOP_LEVEL_BACKUP")
+
     if [ "$BACKUP_STATE" == "null" ]; then
-      # Check if the backup directory contains a .vhd file
-      if find "$NEW_BACKUP" -type f -name "*.vhd" | grep -q .; then
-        echo "$(date) - .vhd file found in $NEW_BACKUP" >> "$LOG_FILE"
+      echo "$(date) - New backup detected in $TOP_LEVEL_BACKUP" >> "$LOG_FILE"
+      save_backup_state "$TOP_LEVEL_BACKUP" "$CURRENT_TIME"
 
-        # If the directory is not already in the state file, process it
-        save_backup_state "$NEW_BACKUP" "$CURRENT_TIME"
-        move_files_to_subvolume "$NEW_BACKUP"  # Move files and create subvolume
-      fi
+      # Convert all subdirectories within the top-level folder to subvolumes and make them immutable
+      find "$TOP_LEVEL_BACKUP" -type d | while read -r SUBDIR; do
+        echo "$(date) - Processing $SUBDIR" >> "$LOG_FILE"
+        move_files_to_subvolume "$SUBDIR"
+      done
     else
-      BACKUP_STATE_INT=$((BACKUP_STATE))  # Convert to integer for comparison
+      BACKUP_STATE_INT=$((BACKUP_STATE))
       if [ $(($CURRENT_TIME - $BACKUP_STATE_INT)) -ge $IMMU_DURATION ]; then
-        lift_immutability "$NEW_BACKUP"  # Lift immutability
-        jq --arg dir "$NEW_BACKUP" 'del(.[$dir])' "$BACKUP_STATE_FILE" > tmp.json && mv tmp.json "$BACKUP_STATE_FILE"
-        echo "$(date) - Lifted immutability for $NEW_BACKUP" >> "$LOG_FILE"
+        lift_immutability "$TOP_LEVEL_BACKUP"
+        jq --arg dir "$TOP_LEVEL_BACKUP" 'del(.[$dir])' "$BACKUP_STATE_FILE" > tmp.json && mv tmp.json "$BACKUP_STATE_FILE"
+        echo "$(date) - Lifted immutability for $TOP_LEVEL_BACKUP" >> "$LOG_FILE"
       else
-        echo "$(date) - $NEW_BACKUP still within immutability period" >> "$LOG_FILE"
+        echo "$(date) - $TOP_LEVEL_BACKUP still within immutability period" >> "$LOG_FILE"
       fi
     fi
   done
 
-  # Sleep for a minute before checking again
   sleep 60
 done
