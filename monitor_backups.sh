@@ -48,26 +48,43 @@ move_cache_files() {
   # Create temp directory to hold cache files
   mkdir -p "$TEMP_DIR"
 
-  # Move all cache.json.gz files to the temp directory
-  find "$DIR" -name "cache.json.gz" -exec mv {} "$TEMP_DIR" \;
-  echo "$(date) - Moved cache.json.gz files from $DIR to $TEMP_DIR" >> "$LOG_FILE"
+  # Find and move all cache.json.gz files while preserving directory structure
+  find "$DIR" -type f -name "cache.json.gz" | while read -r FILE; do
+    REL_PATH="${FILE#$DIR/}"                # Get relative path of the file
+    TEMP_SUBDIR="$TEMP_DIR/$(dirname "$REL_PATH")"
+    mkdir -p "$TEMP_SUBDIR"                 # Create corresponding subdirectory in TEMP_DIR
+    mv "$FILE" "$TEMP_SUBDIR/"              # Move the file to TEMP_SUBDIR
+    echo "$(date) - Moved $FILE to $TEMP_SUBDIR" >> "$LOG_FILE"
+  done
 }
+
+
 
 # Function to restore cache.json.gz files
 restore_cache_files() {
   DIR="$1"
   TEMP_DIR="/volume1/scripts/cache_backup"
 
-  # Move all cache.json.gz files back to their original location
-  find "$TEMP_DIR" -name "cache.json.gz" -exec mv {} "$DIR" \;
-  rmdir "$TEMP_DIR"  # Remove the temp directory if empty
-  echo "$(date) - Restored cache.json.gz files to $DIR" >> "$LOG_FILE"
+  # Restore all cache.json.gz files to their original locations
+  find "$TEMP_DIR" -type f -name "cache.json.gz" | while read -r FILE; do
+    REL_PATH="${FILE#$TEMP_DIR/}"           # Get relative path of the file in TEMP_DIR
+    ORIGINAL_DIR="$DIR/$(dirname "$REL_PATH")"
+    mkdir -p "$ORIGINAL_DIR"                # Ensure the original directory exists
+    mv "$FILE" "$ORIGINAL_DIR/"             # Move the file back to its original location
+    echo "$(date) - Restored $FILE to $ORIGINAL_DIR" >> "$LOG_FILE"
+  done
+
+  # Remove the temporary directory
+  rm -rf "$TEMP_DIR"
+  echo "$(date) - Removed temporary directory $TEMP_DIR" >> "$LOG_FILE"
 }
+
+
 
 # Function to move files to a temporary folder, create a subvolume, and make the subvolume immutable
 move_files_to_subvolume() {
   DIR="$1"
-  TEMP_DIR="${DIR}.temp"
+  TEMP_DIR="${DIR}_temp_$(date +%s)"
 
   move_cache_files "$DIR"
 
@@ -76,7 +93,7 @@ move_files_to_subvolume() {
   echo "$(date) - Created temp directory $TEMP_DIR to store files temporarily" >> "$LOG_FILE"
 
   # Move all files from the original directory to the temp directory, including hidden files
-  sudo mv "$DIR"/* "$DIR"/.* "$TEMP_DIR" 2>/dev/null || true
+  sudo mv "$DIR"/{*,.[^.]*} "$TEMP_DIR" 2>/dev/null || true
   echo "$(date) - Moved files from $DIR to temp directory $TEMP_DIR" >> "$LOG_FILE"
 
   # Check if $DIR is a subvolume and delete it if necessary
