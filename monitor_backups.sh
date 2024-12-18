@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Directory where backups are stored (customize if necessary)
-BACKUP_DIR="/volume1/XCP06"
+BACKUP_DIR="/volume1/XCP06/xo-vm-backups" 
 CACHE_DIR="/volume1/XCP06_writable_cache" # Writable directory for cache.json.gz
 IMMU_DURATION=1209600                     # 14 days in seconds
 BACKUP_STATE_FILE="/volume1/scripts/backup_state.json"
@@ -25,10 +25,21 @@ save_backup_state() {
 }
 
 # Function to skip unnecessary directories
+declare -A SKIPPED_LOGGED_DIRS=()
+
 skip_unnecessary_directories() {
   DIR="$1"
-  [[ "$DIR" == *"#recycle"* || "$DIR" == *@eaDir* || "$DIR" == *.snapshots* ]]
+  if [[ "$DIR" == *"#recycle"* || "$DIR" == *"@eaDir"* || "$DIR" == *.snapshots* ]]; then
+    # Log only once per run
+    if [ -z "${SKIPPED_LOGGED_DIRS[$DIR]}" ]; then
+      echo "$(date) - Skipping special directory $DIR" >>"$LOG_FILE"
+      SKIPPED_LOGGED_DIRS[$DIR]=1
+    fi
+    return 0
+  fi
+  return 1
 }
+
 
 # Function to read backup state
 get_backup_state() {
@@ -128,7 +139,6 @@ make_immutable() {
 
 # Skip special directories
   if skip_unnecessary_directories "$DIR"; then
-    echo "$(date) - Skipping special directory $DIR" >>"$LOG_FILE"
     return
   fi
 
@@ -164,17 +174,23 @@ lift_immutability() {
 }
 
 # Loop to monitor new directories
+declare -A PROCESSED_DIRS=()
 while true; do
   CURRENT_TIME=$(date +%s)
+  NEW_BACKUP_FOUND=false
 
   # Find all .vhd files and determine their top-level backup folder
   find "$BACKUP_DIR" -type f -name "*.vhd" | while read -r VHD_FILE; do
-    # Determine the top-level folder (e.g., /volume1/XCP06/folder1)
     TOP_LEVEL_BACKUP=$(echo "$VHD_FILE" | sed -E "s|^$BACKUP_DIR/([^/]+).*|\1|")
     TOP_LEVEL_BACKUP="$BACKUP_DIR/$TOP_LEVEL_BACKUP"
+
+    # Skip if directory has already been processed in this run
+    if [ -n "${PROCESSED_DIRS[$TOP_LEVEL_BACKUP]}" ]; then
+      continue
+    fi
+
     # Exclude special directories like #recycle
-    if [[ "$TOP_LEVEL_BACKUP" == *"#recycle"* ]]; then
-      echo "$(date) - Skipping special directory $TOP_LEVEL_BACKUP" >>"$LOG_FILE"
+    if skip_unnecessary_directories "$TOP_LEVEL_BACKUP"; then
       continue
     fi
 
@@ -183,21 +199,11 @@ while true; do
 
     if [ "$BACKUP_STATE" == "null" ]; then
       echo "$(date) - New backup detected in $TOP_LEVEL_BACKUP" >>"$LOG_FILE"
-      replace_cache_files_with_symlinks "$TOP_LEVEL_BACKUP" # Handle cache files
       save_backup_state "$TOP_LEVEL_BACKUP" "$CURRENT_TIME"
+      PROCESSED_DIRS[$TOP_LEVEL_BACKUP]=1
+      NEW_BACKUP_FOUND=true
 
-      # Convert all subdirectories within the top-level folder to subvolumes
-      find "$TOP_LEVEL_BACKUP" -type d -depth | while read -r SUBDIR; do
-        if skip_unnecessary_directories "$SUBDIR"; then
-          echo "$(date) - Skipping unnecessary subdirectory $SUBDIR" >>"$LOG_FILE"
-          continue
-        fi
-
-        echo "$(date) - Processing subdirectory $SUBDIR" >>"$LOG_FILE"
-        move_files_to_subvolume "$SUBDIR"
-      done
-
-      # Make the top-level directory immutable AFTER processing subdirectories
+      # Make the top-level directory immutable
       echo "$(date) - Making top-level directory $TOP_LEVEL_BACKUP immutable" >>"$LOG_FILE"
       sudo btrfs property set "$TOP_LEVEL_BACKUP" ro true
       if [ $? -eq 0 ]; then
@@ -205,19 +211,32 @@ while true; do
       else
         echo "$(date) - Failed to make $TOP_LEVEL_BACKUP immutable" >>"$LOG_FILE"
       fi
-
     else
       BACKUP_STATE_INT=$((BACKUP_STATE))
       if [ $(($CURRENT_TIME - $BACKUP_STATE_INT)) -ge $IMMU_DURATION ]; then
-        lift_immutability "$TOP_LEVEL_BACKUP"
+        echo "$(date) - Lifting immutability for $TOP_LEVEL_BACKUP" >>"$LOG_FILE"
+        sudo btrfs property set "$TOP_LEVEL_BACKUP" ro false
         jq --arg dir "$TOP_LEVEL_BACKUP" 'del(.[$dir])' "$BACKUP_STATE_FILE" >tmp.json && mv tmp.json "$BACKUP_STATE_FILE"
-        echo "$(date) - Lifted immutability for $TOP_LEVEL_BACKUP" >>"$LOG_FILE"
       else
-        echo "$(date) - $TOP_LEVEL_BACKUP still within immutability period" >>"$LOG_FILE"
+        if [ -z "${PROCESSED_DIRS[$TOP_LEVEL_BACKUP]}" ]; then
+          echo "$(date) - $TOP_LEVEL_BACKUP still within immutability period" >>"$LOG_FILE"
+          PROCESSED_DIRS[$TOP_LEVEL_BACKUP]=1
+        fi
       fi
     fi
   done
 
-  sleep 60
+  # Clear the tracked processed directories for the next run
+  PROCESSED_DIRS=()
+  SKIPPED_LOGGED_DIRS=()
+
+  # Sleep longer if no new backups are found
+  if [ "$NEW_BACKUP_FOUND" = false ]; then
+    sleep 600  # Sleep for 10 minutes if no new backups are found
+  else
+    sleep 60   # Default sleep interval if new backups are found
+  fi
 done
+
+
 
