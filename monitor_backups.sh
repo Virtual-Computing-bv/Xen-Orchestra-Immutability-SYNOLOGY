@@ -173,16 +173,50 @@ lift_immutability() {
   fi
 }
 
+# Function to check if the backup directory is inactive (ignores cache.json.gz)
+is_directory_inactive() {
+  DIR="$1"
+  INACTIVITY_PERIOD=600  # 10 minutes
+
+  # Find the newest modification time of any file excluding cache.json.gz
+  LAST_MODIFIED_TIME=$(find "$DIR" -type f ! -name "cache.json.gz" -printf "%T@\n" | sort -n | tail -1)
+  CURRENT_TIME=$(date +%s)
+
+  if [ -z "$LAST_MODIFIED_TIME" ]; then
+    echo "$(date) - No relevant files found in $DIR" >>"$LOG_FILE"
+    return 1  # No relevant files found; cannot determine if backup is complete
+  fi
+
+  # Convert LAST_MODIFIED_TIME to an integer (strip decimal part)
+  LAST_MODIFIED_TIME=${LAST_MODIFIED_TIME%.*}
+
+  # Calculate the time difference using Bash arithmetic
+  TIME_DIFF=$((CURRENT_TIME - LAST_MODIFIED_TIME))
+
+  if [ "$TIME_DIFF" -ge "$INACTIVITY_PERIOD" ]; then
+    return 0  # Directory is inactive (no changes for the specified inactivity period)
+  else
+    echo "$(date) - Directory $DIR is still active (last modified $TIME_DIFF seconds ago)" >>"$LOG_FILE"
+    return 1  # Directory is still active
+  fi
+}
+
+
+
 # Loop to monitor new directories
 declare -A PROCESSED_DIRS=()
 while true; do
   CURRENT_TIME=$(date +%s)
   NEW_BACKUP_FOUND=false
 
-  # Find all .vhd files and determine their top-level backup folder
-  find "$BACKUP_DIR" -type f -name "*.vhd" | while read -r VHD_FILE; do
-    TOP_LEVEL_BACKUP=$(echo "$VHD_FILE" | sed -E "s|^$BACKUP_DIR/([^/]+).*|\1|")
-    TOP_LEVEL_BACKUP="$BACKUP_DIR/$TOP_LEVEL_BACKUP"
+  echo "$(date) - Starting new iteration of backup monitoring loop" >>"$LOG_FILE"
+
+  # Find all unique top-level backup directories containing .vhd files
+  find "$BACKUP_DIR" -type f -name "*.vhd" | \
+    sed -E "s|^$BACKUP_DIR/([^/]+).*|\1|" | \
+    sort -u | while read -r DIR_NAME; do
+
+    TOP_LEVEL_BACKUP="$BACKUP_DIR/$DIR_NAME"
 
     # Skip if directory has already been processed in this run
     if [ -n "${PROCESSED_DIRS[$TOP_LEVEL_BACKUP]}" ]; then
@@ -194,35 +228,17 @@ while true; do
       continue
     fi
 
-    # Check if the top-level backup folder has already been processed
-    BACKUP_STATE=$(get_backup_state "$TOP_LEVEL_BACKUP")
-
-    if [ "$BACKUP_STATE" == "null" ]; then
-      echo "$(date) - New backup detected in $TOP_LEVEL_BACKUP" >>"$LOG_FILE"
+    # Check if the backup is complete by checking for inactivity
+    if is_directory_inactive "$TOP_LEVEL_BACKUP"; then
+      echo "$(date) - Backup in $TOP_LEVEL_BACKUP appears complete; making it immutable" >>"$LOG_FILE"
       save_backup_state "$TOP_LEVEL_BACKUP" "$CURRENT_TIME"
       PROCESSED_DIRS[$TOP_LEVEL_BACKUP]=1
       NEW_BACKUP_FOUND=true
 
       # Make the top-level directory immutable
-      echo "$(date) - Making top-level directory $TOP_LEVEL_BACKUP immutable" >>"$LOG_FILE"
-      sudo btrfs property set "$TOP_LEVEL_BACKUP" ro true
-      if [ $? -eq 0 ]; then
-        echo "$(date) - Successfully made $TOP_LEVEL_BACKUP immutable" >>"$LOG_FILE"
-      else
-        echo "$(date) - Failed to make $TOP_LEVEL_BACKUP immutable" >>"$LOG_FILE"
-      fi
+      make_immutable "$TOP_LEVEL_BACKUP"
     else
-      BACKUP_STATE_INT=$((BACKUP_STATE))
-      if [ $(($CURRENT_TIME - $BACKUP_STATE_INT)) -ge $IMMU_DURATION ]; then
-        echo "$(date) - Lifting immutability for $TOP_LEVEL_BACKUP" >>"$LOG_FILE"
-        sudo btrfs property set "$TOP_LEVEL_BACKUP" ro false
-        jq --arg dir "$TOP_LEVEL_BACKUP" 'del(.[$dir])' "$BACKUP_STATE_FILE" >tmp.json && mv tmp.json "$BACKUP_STATE_FILE"
-      else
-        if [ -z "${PROCESSED_DIRS[$TOP_LEVEL_BACKUP]}" ]; then
-          echo "$(date) - $TOP_LEVEL_BACKUP still within immutability period" >>"$LOG_FILE"
-          PROCESSED_DIRS[$TOP_LEVEL_BACKUP]=1
-        fi
-      fi
+      echo "$(date) - Backup in $TOP_LEVEL_BACKUP is still ongoing; skipping immutability" >>"$LOG_FILE"
     fi
   done
 
@@ -237,6 +253,3 @@ while true; do
     sleep 60   # Default sleep interval if new backups are found
   fi
 done
-
-
-
