@@ -232,6 +232,16 @@ while true; do
       continue
     fi
 
+    # Check if the directory was processed recently
+    LAST_PROCESSED_TIME=$(get_backup_state "$TOP_LEVEL_BACKUP")
+    if [ "$LAST_PROCESSED_TIME" != "null" ] && [ -n "$LAST_PROCESSED_TIME" ]; then
+      TIME_DIFF=$((CURRENT_TIME - LAST_PROCESSED_TIME))
+      if [ "$TIME_DIFF" -lt "$IMMU_DURATION" ]; then
+        echo "$(date) - Backup $TOP_LEVEL_BACKUP was processed $TIME_DIFF seconds ago; skipping." >>"$LOG_FILE"
+        continue
+      fi
+    fi
+
     # Check if the backup is complete by checking for inactivity
     if is_directory_inactive "$TOP_LEVEL_BACKUP"; then
       echo "$(date) - Backup in $TOP_LEVEL_BACKUP appears complete; proceeding with subvolume creation" >>"$LOG_FILE"
