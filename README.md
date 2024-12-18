@@ -35,7 +35,7 @@ This script facilitates **immutable backups** on a **Synology NAS** using **Btrf
 - **Backup Directory**:
   Set the path to your Xen Orchestra backup location:
   ```bash
-  BACKUP_DIR="/volume1/XCP06"
+  BACKUP_DIR="/volume1/XCP06/xo-vm-backups"
   ```
 
 - **Writable Cache Directory**:
