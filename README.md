@@ -1,9 +1,8 @@
-
 # 📄 Immutable Backups Script for Synology NAS with Xen Orchestra
 
 ## Overview
 
-This script facilitates **immutable backups** on a **Synology NAS** using **Btrfs** subvolumes. It complements **Xen Orchestra (XO)** backup functionality by achieving immutability through Btrfs subvolume properties instead of the `chattr` method, which is unsupported on Synology's Btrfs implementation.
+This script automates **immutable backups** on a **Synology NAS** using **Btrfs subvolumes**. It works alongside **Xen Orchestra (XO)** to achieve immutability by leveraging the Btrfs `ro` (read-only) property, instead of the unsupported `chattr` method. The script also intelligently handles `cache.json.gz` files by moving them to a writable cache directory and creating symbolic links to maintain compatibility with XO.
 
 ## 📝 Why This Script?
 
@@ -11,7 +10,7 @@ This script facilitates **immutable backups** on a **Synology NAS** using **Btrf
 - **Synology NAS** with Btrfs does **not support `chattr`**.
 - This script utilizes **Btrfs subvolumes** and the **Btrfs `ro` (read-only) property** to implement immutability.
 - It ensures that backup directories containing `.vhd` files are converted to **Btrfs subvolumes** and made immutable for a specified duration (default: **14 days**).
-- The script now effectively **excludes directories like `@eaDir`, `#recycle`, and `.snapshots`** to avoid unnecessary processing.
+- It effectively **excludes directories** like `@eaDir`, `#recycle`, and `.snapshots` to avoid unnecessary processing.
 
 ## ⚙️ How It Works
 
@@ -21,7 +20,7 @@ This script facilitates **immutable backups** on a **Synology NAS** using **Btrf
 2. **Detects New Backups**:
    - When a new backup containing `.vhd` files is detected, the script:
      - Excludes unnecessary directories (e.g., `@eaDir`, `#recycle`, `.snapshots`).
-     - Replaces `cache.json.gz` files with symbolic links to a writable cache directory.
+     - Replaces `cache.json.gz` files with symbolic links to a writable cache directory, using unique filenames.
      - Moves the backup files to a temporary location.
      - Creates a **Btrfs subvolume** with the original directory name.
      - Restores the files to the new subvolume.
@@ -51,13 +50,13 @@ This script facilitates **immutable backups** on a **Synology NAS** using **Btrf
   IMMU_DURATION=1209600  # 14 days in seconds
   ```
 
-## 🔗 Integration with Xen Orchestra
+## 🗝 Integration with Xen Orchestra
 
-1. **Xen Orchestra Backup Configuration**:
+### 1. **Xen Orchestra Backup Configuration**
    - Configure your Xen Orchestra backup jobs to target the Synology NAS.
    - Ensure the backup destination is on a **Btrfs volume**.
 
-2. **Deploy the Script on Synology**:
+### 2. **Deploy the Script on Synology**
    - Copy the script to your Synology NAS (e.g., `/volume1/scripts/monitor_backups.sh`):
      ```bash
      chmod +x /volume1/scripts/monitor_backups.sh
@@ -67,16 +66,16 @@ This script facilitates **immutable backups** on a **Synology NAS** using **Btrf
      sudo /volume1/scripts/monitor_backups.sh
      ```
 
-3. **Automate Script Execution**:
+### 3. **Automate Script Execution**
    - Use Synology's **Task Scheduler** to run the script at boot or regular intervals.
 
-## 📦 Script Components
+## 📆 Script Components
 
 - **`save_backup_state`**: Saves the state (timestamp) of processed backups.
 - **`get_backup_state`**: Reads the state of a backup from `backup_state.json`.
 - **`is_subvolume`**: Checks if a directory is a Btrfs subvolume.
 - **`skip_unnecessary_directories`**: Excludes `@eaDir`, `#recycle`, and `.snapshots` directories.
-- **`replace_cache_files_with_symlinks`**: Moves `cache.json.gz` files to a writable cache and replaces them with symbolic links.
+- **`replace_cache_files_with_symlinks`**: Moves `cache.json.gz` files to a writable cache with unique filenames and replaces them with symbolic links.
 - **`move_files_to_subvolume`**: Moves files to a temporary location, creates a subvolume, restores files, and makes the subvolume immutable.
 - **`make_immutable`**: Sets a Btrfs subvolume to read-only (immutable).
 - **`lift_immutability`**: Reverts a Btrfs subvolume to read-write.
@@ -95,12 +94,12 @@ This script facilitates **immutable backups** on a **Synology NAS** using **Btrf
 Log entries are saved to `/volume1/scripts/monitor_backups.log`:
 
 ```
-Mon Apr 22 10:00:00 UTC 2024 - Starting monitor_backups.sh
-Mon Apr 22 10:01:10 UTC 2024 - New backup detected in /volume1/XCP06/backup1
-Mon Apr 22 10:01:12 UTC 2024 - Replaced cache.json.gz with symbolic link
-Mon Apr 22 10:01:20 UTC 2024 - Created subvolume /volume1/XCP06/backup1
-Mon Apr 22 10:01:25 UTC 2024 - Making subvolume /volume1/XCP06/backup1 immutable
-Mon May 06 10:01:30 UTC 2024 - Lifted immutability for /volume1/XCP06/backup1
+Wed Dec 18 13:14:55 CET 2024 - Starting monitor_backups.sh
+Wed Dec 18 13:14:55 CET 2024 - Backup in /volume1/XCP06/xo-vm-backups/da1bf1c7-30d9-da49-f1db-9e6f1a85b0ae appears complete; proceeding with subvolume creation
+Wed Dec 18 13:14:55 CET 2024 - Moved /volume1/XCP06/xo-vm-backups/da1bf1c7-30d9-da49-f1db-9e6f1a85b0ae/cache.json.gz to /volume1/XCP06_writable_cache/da1bf1c7-30d9-da49-f1db-9e6f1a85b0ae_cache.json.gz and created symbolic link
+Wed Dec 18 13:14:56 CET 2024 - Created subvolume /volume1/XCP06/xo-vm-backups/da1bf1c7-30d9-da49-f1db-9e6f1a85b0ae
+Wed Dec 18 13:14:56 CET 2024 - Making subvolume /volume1/XCP06/xo-vm-backups/da1bf1c7-30d9-da49-f1db-9e6f1a85b0ae immutable
+Wed Dec 18 13:14:56 CET 2024 - Successfully made subvolume /volume1/XCP06/xo-vm-backups/da1bf1c7-30d9-da49-f1db-9e6f1a85b0ae immutable
 ```
 
 ## ✅ Conclusion
