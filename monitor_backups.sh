@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Directory where backups are stored (customize if necessary)
-BACKUP_DIR="/volume1/XCP06/xo-vm-backups" 
+BACKUP_DIR="/volume1/XCP06/xo-vm-backups"
 CACHE_DIR="/volume1/XCP06_writable_cache" # Writable directory for cache.json.gz
 IMMU_DURATION=1209600                     # 14 days in seconds
 BACKUP_STATE_FILE="/volume1/scripts/backup_state.json"
@@ -40,7 +40,6 @@ skip_unnecessary_directories() {
   return 1
 }
 
-
 # Function to read backup state
 get_backup_state() {
   BACKUP_DIR="$1"
@@ -64,13 +63,20 @@ replace_cache_files_with_symlinks() {
 
   # Find all cache.json.gz files and move them to the writable cache directory
   find "$DIR" -type f -name "cache.json.gz" | while read -r FILE; do
-    REL_PATH="${FILE#$DIR/}"           # Relative path to maintain structure
-    TARGET_FILE="$CACHE_DIR/$REL_PATH" # Writable cache file path
-    TARGET_DIR="$(dirname "$TARGET_FILE")"
+    # Generate a unique relative path for the writable cache directory
+    REL_PATH="${FILE#$BACKUP_DIR/}"                # Relative path from the backup root
+    SAFE_REL_PATH=$(echo "$REL_PATH" | tr '/' '_') # Replace slashes with underscores for a safe filename
+    TARGET_FILE="$CACHE_DIR/$SAFE_REL_PATH"        # Writable cache file path
 
-    mkdir -p "$TARGET_DIR"       # Ensure writable cache directory exists
-    mv "$FILE" "$TARGET_FILE"    # Move cache file to writable location
-    ln -s "$TARGET_FILE" "$FILE" # Create symbolic link at original location
+    # Create the target directory in the writable cache if it doesn't exist
+    TARGET_DIR="$(dirname "$TARGET_FILE")"
+    mkdir -p "$TARGET_DIR"
+
+    # Move the cache file to the writable cache directory
+    mv "$FILE" "$TARGET_FILE"
+
+    # Create a symbolic link pointing to the new location
+    ln -s "$TARGET_FILE" "$FILE"
 
     echo "$(date) - Moved $FILE to $TARGET_FILE and created symbolic link" >>"$LOG_FILE"
   done
@@ -137,7 +143,7 @@ move_files_to_subvolume() {
 make_immutable() {
   DIR="$1"
 
-# Skip special directories
+  # Skip special directories
   if skip_unnecessary_directories "$DIR"; then
     return
   fi
@@ -176,7 +182,7 @@ lift_immutability() {
 # Function to check if the backup directory is inactive (ignores cache.json.gz)
 is_directory_inactive() {
   DIR="$1"
-  INACTIVITY_PERIOD=600  # 10 minutes
+  INACTIVITY_PERIOD=600 # 10 minutes
 
   # Find the newest modification time of any file excluding cache.json.gz
   LAST_MODIFIED_TIME=$(find "$DIR" -type f ! -name "cache.json.gz" -printf "%T@\n" | sort -n | tail -1)
@@ -184,7 +190,7 @@ is_directory_inactive() {
 
   if [ -z "$LAST_MODIFIED_TIME" ]; then
     echo "$(date) - No relevant files found in $DIR" >>"$LOG_FILE"
-    return 1  # No relevant files found; cannot determine if backup is complete
+    return 1 # No relevant files found; cannot determine if backup is complete
   fi
 
   # Convert LAST_MODIFIED_TIME to an integer (strip decimal part)
@@ -194,14 +200,12 @@ is_directory_inactive() {
   TIME_DIFF=$((CURRENT_TIME - LAST_MODIFIED_TIME))
 
   if [ "$TIME_DIFF" -ge "$INACTIVITY_PERIOD" ]; then
-    return 0  # Directory is inactive (no changes for the specified inactivity period)
+    return 0 # Directory is inactive (no changes for the specified inactivity period)
   else
     echo "$(date) - Directory $DIR is still active (last modified $TIME_DIFF seconds ago)" >>"$LOG_FILE"
-    return 1  # Directory is still active
+    return 1 # Directory is still active
   fi
 }
-
-
 
 # Loop to monitor new directories
 declare -A PROCESSED_DIRS=()
@@ -212,8 +216,8 @@ while true; do
   echo "$(date) - Starting new iteration of backup monitoring loop" >>"$LOG_FILE"
 
   # Find all unique top-level backup directories containing .vhd files
-  find "$BACKUP_DIR" -type f -name "*.vhd" | \
-    sed -E "s|^$BACKUP_DIR/([^/]+).*|\1|" | \
+  find "$BACKUP_DIR" -type f -name "*.vhd" |
+    sed -E "s|^$BACKUP_DIR/([^/]+).*|\1|" |
     sort -u | while read -r DIR_NAME; do
 
     TOP_LEVEL_BACKUP="$BACKUP_DIR/$DIR_NAME"
@@ -230,13 +234,16 @@ while true; do
 
     # Check if the backup is complete by checking for inactivity
     if is_directory_inactive "$TOP_LEVEL_BACKUP"; then
-      echo "$(date) - Backup in $TOP_LEVEL_BACKUP appears complete; making it immutable" >>"$LOG_FILE"
-      save_backup_state "$TOP_LEVEL_BACKUP" "$CURRENT_TIME"
-      PROCESSED_DIRS[$TOP_LEVEL_BACKUP]=1
-      NEW_BACKUP_FOUND=true
+      echo "$(date) - Backup in $TOP_LEVEL_BACKUP appears complete; proceeding with subvolume creation" >>"$LOG_FILE"
 
-      # Make the top-level directory immutable
-      make_immutable "$TOP_LEVEL_BACKUP"
+      # Perform the steps to create a subvolume and make it immutable
+      if move_files_to_subvolume "$TOP_LEVEL_BACKUP"; then
+        save_backup_state "$TOP_LEVEL_BACKUP" "$CURRENT_TIME"
+        PROCESSED_DIRS[$TOP_LEVEL_BACKUP]=1
+        NEW_BACKUP_FOUND=true
+      else
+        echo "$(date) - Failed to process $TOP_LEVEL_BACKUP" >>"$LOG_FILE"
+      fi
     else
       echo "$(date) - Backup in $TOP_LEVEL_BACKUP is still ongoing; skipping immutability" >>"$LOG_FILE"
     fi
@@ -248,8 +255,8 @@ while true; do
 
   # Sleep longer if no new backups are found
   if [ "$NEW_BACKUP_FOUND" = false ]; then
-    sleep 600  # Sleep for 10 minutes if no new backups are found
+    sleep 600 # Sleep for 10 minutes if no new backups are found
   else
-    sleep 60   # Default sleep interval if new backups are found
+    sleep 60 # Default sleep interval if new backups are found
   fi
 done
