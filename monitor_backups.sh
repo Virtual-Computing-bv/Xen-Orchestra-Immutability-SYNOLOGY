@@ -87,48 +87,57 @@ move_files_to_subvolume() {
   DIR="$1"
   TEMP_DIR="${DIR}_temp_$(date +%s)"
 
+  # Replace cache files with symlinks
   replace_cache_files_with_symlinks "$DIR"
 
-  # Create temp directory to store files temporarily
-  sudo mkdir -p "$TEMP_DIR"
-  echo "$(date) - Created temp directory $TEMP_DIR to store files temporarily" >>"$LOG_FILE"
-
-  # Move all files from the original directory to the temp directory, including hidden files
-  sudo mv "$DIR"/{*,.[^.]*} "$TEMP_DIR" 2>/dev/null || true
-  echo "$(date) - Moved files from $DIR to temp directory $TEMP_DIR" >>"$LOG_FILE"
-
-  # Check if $DIR is a subvolume and delete it if necessary
+  # Check if $DIR is a subvolume
   if is_subvolume "$DIR"; then
-    echo "$(date) - $DIR is a subvolume; deleting the subvolume before recreating" >>"$LOG_FILE"
+    echo "$(date) - $DIR is already a subvolume" >>"$LOG_FILE"
+
+    # Lift immutability to allow modifications
     sudo btrfs property set "$DIR" ro false
-    sudo btrfs subvolume delete "$DIR"
-    if [ $? -eq 0 ]; then
-      echo "$(date) - Deleted existing subvolume $DIR" >>"$LOG_FILE"
-    else
-      echo "$(date) - Failed to delete existing subvolume $DIR" >>"$LOG_FILE"
+    if [ $? -ne 0 ]; then
+      echo "$(date) - Failed to lift immutability for $DIR; cannot proceed" >>"$LOG_FILE"
       return 1
     fi
+    echo "$(date) - Lifted immutability for $DIR" >>"$LOG_FILE"
+
+    # Move files to TEMP_DIR
+    sudo mkdir -p "$TEMP_DIR"
+    sudo mv "$DIR"/{*,.[^.]*} "$TEMP_DIR" 2>/dev/null || true
+    echo "$(date) - Moved files from $DIR to temp directory $TEMP_DIR" >>"$LOG_FILE"
+
+    # Delete the subvolume
+    sudo btrfs subvolume delete "$DIR"
+    if [ $? -ne 0 ]; then
+      echo "$(date) - Failed to delete subvolume $DIR" >>"$LOG_FILE"
+      return 1
+    fi
+    echo "$(date) - Deleted existing subvolume $DIR" >>"$LOG_FILE"
   else
-    # Remove the original directory to create the subvolume
+    # If not a subvolume, create TEMP_DIR and move files
+    sudo mkdir -p "$TEMP_DIR"
+    sudo mv "$DIR"/{*,.[^.]*} "$TEMP_DIR" 2>/dev/null || true
+    echo "$(date) - Moved files from $DIR to temp directory $TEMP_DIR" >>"$LOG_FILE"
+
+    # Remove the original directory
     sudo rmdir "$DIR"
-    if [ $? -eq 0 ]; then
-      echo "$(date) - Removed original directory $DIR" >>"$LOG_FILE"
-    else
+    if [ $? -ne 0 ]; then
       echo "$(date) - Failed to remove original directory $DIR" >>"$LOG_FILE"
       return 1
     fi
+    echo "$(date) - Removed original directory $DIR" >>"$LOG_FILE"
   fi
 
   # Create the subvolume
   sudo btrfs subvolume create "$DIR"
-  if [ $? -eq 0 ]; then
-    echo "$(date) - Created subvolume $DIR" >>"$LOG_FILE"
-  else
+  if [ $? -ne 0 ]; then
     echo "$(date) - Failed to create subvolume $DIR" >>"$LOG_FILE"
     return 1
   fi
+  echo "$(date) - Created subvolume $DIR" >>"$LOG_FILE"
 
-  # Move files back into the original directory (now a subvolume)
+  # Move files back to the original directory
   sudo mv "$TEMP_DIR"/* "$DIR/"
   sudo mv "$TEMP_DIR"/.* "$DIR/" 2>/dev/null || true
   sudo rmdir "$TEMP_DIR" # Remove the temp directory
@@ -136,8 +145,8 @@ move_files_to_subvolume() {
 
   # Make the subvolume immutable
   make_immutable "$DIR"
-
 }
+
 
 # Function to make a directory or subvolume immutable
 make_immutable() {
@@ -237,7 +246,6 @@ while true; do
     if [ "$LAST_PROCESSED_TIME" != "null" ] && [ -n "$LAST_PROCESSED_TIME" ]; then
       TIME_DIFF=$((CURRENT_TIME - LAST_PROCESSED_TIME))
       if [ "$TIME_DIFF" -lt "$IMMU_DURATION" ]; then
-        echo "$(date) - Backup $TOP_LEVEL_BACKUP was processed $TIME_DIFF seconds ago; skipping." >>"$LOG_FILE"
         continue
       fi
     fi
